@@ -113,6 +113,8 @@ async def startup():
     utils.socketio.on("nfproxy-outstream-leave", leave_outstream)
     utils.socketio.on("nfproxy-exception-join", join_exception)
     utils.socketio.on("nfproxy-exception-leave", leave_exception)
+    utils.socketio.on("nfproxy-traffic-join", join_traffic)
+    utils.socketio.on("nfproxy-traffic-leave", leave_traffic)
 
 async def shutdown():
     db.backup()
@@ -133,7 +135,10 @@ async def outstream_func(service_id, data):
 async def exception_func(service_id, timestamp):
     await utils.socketio.emit(f"nfproxy-exception-{service_id}", timestamp, room=f"nfproxy-exception-{service_id}")
 
-firewall = FirewallManager(db, outstream_func=outstream_func, exception_func=exception_func)
+async def traffic_func(service_id, event):
+    await utils.socketio.emit(f"nfproxy-traffic-{service_id}", event, room=f"nfproxy-traffic-{service_id}")
+
+firewall = FirewallManager(db, outstream_func=outstream_func, exception_func=exception_func, traffic_func=traffic_func)
 
 @app.get('/services', response_model=list[ServiceModel])
 async def get_service_list():
@@ -357,7 +362,17 @@ async def set_pyfilters_code(service_id: str, form: SetPyFilterForm):
     
     return {'status': 'ok'}
 
-@app.get('/services/{service_id}/code', response_class=PlainTextResponse)
+@app.get('/services/{service_id}/traffic')
+async def get_service_traffic(service_id: str):
+    """Get the buffered traffic events for a service"""
+    if not db.query("SELECT 1 FROM services WHERE service_id = ?;", service_id):
+        raise HTTPException(status_code=400, detail="This service does not exists!")
+    try:
+        return firewall.get(service_id).read_traffic_buffer()
+    except Exception:
+        return []
+
+
 async def get_pyfilters_code(service_id: str):
     """Get the python filter for a service"""
     if not db.query("SELECT 1 FROM services WHERE service_id = ?;", service_id):
@@ -397,3 +412,20 @@ async def leave_exception(sid, data):
     if srv:
         await utils.socketio.leave_room(sid, f"nfproxy-exception-{srv}")
 
+async def join_traffic(sid, data):
+    """Client joins a traffic room and receives the buffered events."""
+    srv = data.get("service")
+    if srv:
+        room = f"nfproxy-traffic-{srv}"
+        await utils.socketio.enter_room(sid, room)
+        try:
+            buffered = firewall.get(srv).read_traffic_buffer()
+        except Exception:
+            buffered = []
+        await utils.socketio.emit(f"nfproxy-traffic-init-{srv}", buffered, room=sid)
+
+async def leave_traffic(sid, data):
+    """Client leaves a traffic room."""
+    srv = data.get("service")
+    if srv:
+        await utils.socketio.leave_room(sid, f"nfproxy-traffic-{srv}")
