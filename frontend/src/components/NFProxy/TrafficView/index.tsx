@@ -41,14 +41,20 @@ function eventMatchesFilter(ev: TrafficEvent, filter: string): boolean {
     return false;
 }
 
+type TrafficEventWithId = TrafficEvent & { _id: number };
+
 export default function TrafficView({ service_id }: { service_id: string }) {
-    const [events, setEvents] = useState<TrafficEvent[]>([]);
+    const [events, setEvents] = useState<TrafficEventWithId[]>([]);
     const [filter, setFilter] = useState('');
     const [paused, setPaused] = useState(false);
     const pausedRef = useRef(paused);
     pausedRef.current = paused;
     const viewport = useRef<HTMLDivElement>(null);
     const [autoScroll, setAutoScroll] = useState(true);
+    const idCounter = useRef(0);
+
+    const assignIds = (items: TrafficEvent[]): TrafficEventWithId[] =>
+        items.map(ev => ({ ...ev, _id: idCounter.current++ }));
 
     useEffect(() => {
         socketio.emit('nfproxy-traffic-join', { service: service_id });
@@ -57,7 +63,7 @@ export default function TrafficView({ service_id }: { service_id: string }) {
         socketio.on(`nfproxy-traffic-init-${service_id}`, (data: TrafficEvent[]) => {
             if (!pausedRef.current) {
                 setEvents(prev => {
-                    const combined = [...prev, ...data];
+                    const combined = [...prev, ...assignIds(data)];
                     return combined.slice(-MAX_DISPLAYED);
                 });
             }
@@ -67,7 +73,7 @@ export default function TrafficView({ service_id }: { service_id: string }) {
         socketio.on(`nfproxy-traffic-${service_id}`, (ev: TrafficEvent) => {
             if (!pausedRef.current) {
                 setEvents(prev => {
-                    const next = [...prev, ev];
+                    const next = [...prev, ...assignIds([ev])];
                     return next.slice(-MAX_DISPLAYED);
                 });
             }
@@ -137,9 +143,9 @@ export default function TrafficView({ service_id }: { service_id: string }) {
                         <Text c="dimmed" size="sm">No traffic events yet. Start the service to capture traffic.</Text>
                     </Box>
                 ) : (
-                    filtered.map((ev, i) => (
+                    filtered.map((ev) => (
                         <Box
-                            key={i}
+                            key={ev._id}
                             py={3}
                             px="xs"
                             style={{
