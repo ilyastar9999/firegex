@@ -164,8 +164,8 @@ class FiregexInterceptor:
                     self.ack_lock.release()
                     await self.stop()
                     raise HTTPException(status_code=500, detail="Can't read from nfq client") from e
-                ts = int(time.time() * 1000)
                 if line.startswith("BLOCKED "):
+                    ts = int(time.time() * 1000)
                     parts = line.split()
                     filter_name = parts[1] if len(parts) > 1 else ""
                     print("BLOCKED", filter_name)
@@ -179,6 +179,7 @@ class FiregexInterceptor:
                         event.update(conn)
                     await self._emit_traffic_event(event)
                 elif line.startswith("MANGLED "):
+                    ts = int(time.time() * 1000)
                     parts = line.split()
                     filter_name = parts[1] if len(parts) > 1 else ""
                     async with self.filter_map_lock:
@@ -191,6 +192,7 @@ class FiregexInterceptor:
                         event.update(conn)
                     await self._emit_traffic_event(event)
                 elif line.startswith("EXCEPTION"):
+                    ts = int(time.time() * 1000)
                     self.last_time_exception = ts
                     if self.expection_function:
                         await run_func(self.expection_function, self.srv.id, self.last_time_exception)
@@ -201,6 +203,7 @@ class FiregexInterceptor:
                         event.update(conn)
                     await self._emit_traffic_event(event)
                 elif line.startswith("CONN_OPEN "):
+                    ts = int(time.time() * 1000)
                     parts = line.split()
                     conn = _parse_conn_parts(parts[1:])
                     event = {"timestamp": ts, "event_type": "conn_open"}
@@ -208,6 +211,7 @@ class FiregexInterceptor:
                         event.update(conn)
                     await self._emit_traffic_event(event)
                 elif line.startswith("CONN_CLOSE "):
+                    ts = int(time.time() * 1000)
                     parts = line.split()
                     conn = _parse_conn_parts(parts[1:])
                     event = {"timestamp": ts, "event_type": "conn_close"}

@@ -1,5 +1,5 @@
 import { Badge, Box, Button, CloseButton, Code, Divider, Group, ScrollArea, Space, Text, TextInput, Title, Tooltip } from '@mantine/core';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { socketio } from '../../../js/utils';
 import { TrafficEvent } from '../utils';
 import { FaFilter } from 'react-icons/fa';
@@ -87,7 +87,10 @@ export default function TrafficView({ service_id }: { service_id: string }) {
         }
     }, [events, autoScroll]);
 
-    const filtered = filter ? events.filter(ev => eventMatchesFilter(ev, filter)) : events;
+    const filtered = useMemo(
+        () => filter ? events.filter(ev => eventMatchesFilter(ev, filter)) : events,
+        [events, filter]
+    );
 
     return (
         <Box>
