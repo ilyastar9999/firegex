@@ -12,7 +12,7 @@ class STATUS:
 nft = FiregexTables()
 
 class ServiceManager:
-    def __init__(self, srv: Service, db, outstream_func=None, exception_func=None):
+    def __init__(self, srv: Service, db, outstream_func=None, exception_func=None, traffic_func=None):
         self.srv = srv
         self.db = db
         self.status = STATUS.STOP
@@ -21,6 +21,7 @@ class ServiceManager:
         self.interceptor = None
         self.outstream_function = outstream_func
         self.last_exception_time = 0
+        self.traffic_function = traffic_func
         async def excep_internal_handler(srv, exc_time):
             self.last_exception_time = exc_time
             if exception_func:
@@ -69,9 +70,14 @@ class ServiceManager:
     async def start(self):
         if not self.interceptor:
             nft.delete(self.srv)
-            self.interceptor = await FiregexInterceptor.start(self.srv, outstream_func=self.outstream_function, exception_func=self.exception_function)
+            self.interceptor = await FiregexInterceptor.start(self.srv, outstream_func=self.outstream_function, exception_func=self.exception_function, traffic_func=self.traffic_function)
             await self._update_filters_from_db()
             self._set_status(STATUS.ACTIVE)
+
+    def read_traffic_buffer(self):
+        if self.interceptor:
+            return list(self.interceptor.traffic_buffer)
+        return []
 
     async def stop(self):
         nft.delete(self.srv)
@@ -89,12 +95,13 @@ class ServiceManager:
             await self._update_filters_from_db()
 
 class FirewallManager:
-    def __init__(self, db:SQLite, outstream_func=None, exception_func=None):
+    def __init__(self, db:SQLite, outstream_func=None, exception_func=None, traffic_func=None):
         self.db = db
         self.service_table: dict[str, ServiceManager] = {}
         self.lock = asyncio.Lock()
         self.outstream_function = outstream_func
         self.exception_function = exception_func
+        self.traffic_function = traffic_func
 
     async def close(self):
         for key in list(self.service_table.keys()):
@@ -116,7 +123,7 @@ class FirewallManager:
                 srv = Service.from_dict(srv)
                 if srv.id in self.service_table:
                     continue
-                self.service_table[srv.id] = ServiceManager(srv, self.db, outstream_func=self.outstream_function, exception_func=self.exception_function)
+                self.service_table[srv.id] = ServiceManager(srv, self.db, outstream_func=self.outstream_function, exception_func=self.exception_function, traffic_func=self.traffic_function)
                 await self.service_table[srv.id].next(srv.status)
 
     def get(self,srv_id) -> ServiceManager:

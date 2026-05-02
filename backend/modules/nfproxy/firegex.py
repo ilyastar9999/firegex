@@ -8,10 +8,30 @@ import time
 from utils import run_func
 from utils import DEBUG
 from utils import nicenessify
+from collections import deque
 
 nft = FiregexTables()
 
 OUTSTREAM_BUFFER_SIZE = 1024*10
+TRAFFIC_BUFFER_SIZE = 500
+
+def _parse_conn_parts(parts: list[str]):
+    """Parse connection fields from control socket message parts.
+    Expected: [is_ipv6, src_ip, src_port, dst_ip, dst_port]
+    Returns a dict or None if parsing fails.
+    """
+    if len(parts) < 5:
+        return None
+    try:
+        return {
+            "is_ipv6": parts[0] == "1",
+            "src_ip": parts[1],
+            "src_port": int(parts[2]),
+            "dst_ip": parts[3],
+            "dst_port": int(parts[4]),
+        }
+    except (ValueError, IndexError):
+        return None
 
 class FiregexInterceptor:
     
@@ -35,11 +55,13 @@ class FiregexInterceptor:
         self.last_time_exception = 0
         self.outstrem_function = None
         self.expection_function = None
+        self.traffic_function = None
         self.outstrem_task: asyncio.Task
         self.outstrem_buffer = ""
+        self.traffic_buffer: deque = deque(maxlen=TRAFFIC_BUFFER_SIZE)
     
     @classmethod
-    async def start(cls, srv: Service, outstream_func=None, exception_func=None):
+    async def start(cls, srv: Service, outstream_func=None, exception_func=None, traffic_func=None):
         self = cls()
         self.srv = srv
         self.filter_map_lock = asyncio.Lock()
@@ -47,6 +69,7 @@ class FiregexInterceptor:
         self.sock_conn_lock = asyncio.Lock()
         self.outstrem_function = outstream_func
         self.expection_function = exception_func
+        self.traffic_function = traffic_func
         if not self.sock_conn_lock.locked():
             await self.sock_conn_lock.acquire()
         self.sock_path = f"/tmp/firegex_nfproxy_{srv.id}.sock"
@@ -123,6 +146,12 @@ class FiregexInterceptor:
         self.sock_writer = writer
         self.sock_conn_lock.release()
 
+    async def _emit_traffic_event(self, event: dict):
+        """Append event to the traffic buffer and notify subscribers."""
+        self.traffic_buffer.append(event)
+        if self.traffic_function:
+            await run_func(self.traffic_function, self.srv.id, event)
+
     async def update_stats(self):
         try:
             while True:
@@ -136,23 +165,60 @@ class FiregexInterceptor:
                     await self.stop()
                     raise HTTPException(status_code=500, detail="Can't read from nfq client") from e
                 if line.startswith("BLOCKED "):
-                    filter_name = line.split()[1]
+                    ts = int(time.time() * 1000)
+                    parts = line.split()
+                    filter_name = parts[1] if len(parts) > 1 else ""
                     print("BLOCKED", filter_name)
                     async with self.filter_map_lock:
                         if filter_name in self.filter_map:
                             self.filter_map[filter_name].blocked_packets+=1
-                            await self.filter_map[filter_name].update()  
-                if line.startswith("MANGLED "):
-                    filter_name = line.split()[1]
+                            await self.filter_map[filter_name].update()
+                    conn = _parse_conn_parts(parts[2:])
+                    event = {"timestamp": ts, "event_type": "blocked", "filter_name": filter_name}
+                    if conn:
+                        event.update(conn)
+                    await self._emit_traffic_event(event)
+                elif line.startswith("MANGLED "):
+                    ts = int(time.time() * 1000)
+                    parts = line.split()
+                    filter_name = parts[1] if len(parts) > 1 else ""
                     async with self.filter_map_lock:
                         if filter_name in self.filter_map:
                             self.filter_map[filter_name].edited_packets+=1
                             await self.filter_map[filter_name].update()
-                if line.startswith("EXCEPTION"):
-                    self.last_time_exception = int(time.time()*1000) #ms timestamp
+                    conn = _parse_conn_parts(parts[2:])
+                    event = {"timestamp": ts, "event_type": "mangled", "filter_name": filter_name}
+                    if conn:
+                        event.update(conn)
+                    await self._emit_traffic_event(event)
+                elif line.startswith("EXCEPTION"):
+                    ts = int(time.time() * 1000)
+                    self.last_time_exception = ts
                     if self.expection_function:
                         await run_func(self.expection_function, self.srv.id, self.last_time_exception)
-                if line.startswith("ACK "):
+                    parts = line.split()
+                    conn = _parse_conn_parts(parts[1:])
+                    event = {"timestamp": ts, "event_type": "exception"}
+                    if conn:
+                        event.update(conn)
+                    await self._emit_traffic_event(event)
+                elif line.startswith("CONN_OPEN "):
+                    ts = int(time.time() * 1000)
+                    parts = line.split()
+                    conn = _parse_conn_parts(parts[1:])
+                    event = {"timestamp": ts, "event_type": "conn_open"}
+                    if conn:
+                        event.update(conn)
+                    await self._emit_traffic_event(event)
+                elif line.startswith("CONN_CLOSE "):
+                    ts = int(time.time() * 1000)
+                    parts = line.split()
+                    conn = _parse_conn_parts(parts[1:])
+                    event = {"timestamp": ts, "event_type": "conn_close"}
+                    if conn:
+                        event.update(conn)
+                    await self._emit_traffic_event(event)
+                elif line.startswith("ACK "):
                     self.ack_arrived = True
                     self.ack_status = line.split()[1].upper() == "OK"
                     if not self.ack_status:

@@ -2,6 +2,17 @@ import { PyFilter, ServerResponse } from "../../js/models"
 import { deleteapi, getapi, postapi, putapi } from "../../js/utils"
 import { useQuery } from "@tanstack/react-query"
 
+export type TrafficEvent = {
+    timestamp: number,
+    event_type: 'conn_open' | 'conn_close' | 'blocked' | 'mangled' | 'exception',
+    is_ipv6?: boolean,
+    src_ip?: string,
+    src_port?: number,
+    dst_ip?: string,
+    dst_port?: number,
+    filter_name?: string,
+}
+
 export type Service = {
     service_id:string,
     name:string,
@@ -94,7 +105,10 @@ export const nfproxy = {
     setpyfilterscode: async (service_id:string, code:string) => {
         const { status } = await putapi(`nfproxy/services/${service_id}/code`,{ code }) as ServerResponse;
         return status === "ok"?undefined:status
-    }
+    },
+    gettraffic: async (service_id:string) => {
+        return await getapi(`nfproxy/services/${service_id}/traffic`) as TrafficEvent[];
+    },
 }
 
 

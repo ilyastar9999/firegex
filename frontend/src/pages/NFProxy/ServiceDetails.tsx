@@ -24,6 +24,8 @@ import { ModalLog } from '../../components/ModalLog';
 import { useListState } from '@mantine/hooks';
 import { ExceptionWarning } from '../../components/NFProxy/ExceptionWarning';
 import { DocsButton } from '../../components/DocsButton';
+import TrafficView from '../../components/NFProxy/TrafficView';
+import { MdNetworkCheck } from 'react-icons/md';
 
 export default function ServiceDetailsNFProxy() {
 
@@ -41,6 +43,7 @@ export default function ServiceDetailsNFProxy() {
     const isMedium = isMediumScreen()
     const [openLogModal, setOpenLogModal] = useState(false)
     const [logData, logDataSetters] = useListState<string>([]);
+    const [trafficVisible, setTrafficVisible] = useState(false)
     
 
     useEffect(()=>{
@@ -151,6 +154,12 @@ export default function ServiceDetailsNFProxy() {
                         <FiFileText size="20px" />
                     </ActionIcon>
                 </Tooltip>
+                <Space w="sm"/>
+                <Tooltip label={trafficVisible ? "Hide traffic view" : "Show traffic view"} zIndex={0} color="indigo">
+                    <ActionIcon color={trafficVisible ? "indigo" : "dark"} size="lg" radius="md" onClick={()=>setTrafficVisible(v => !v)} variant="filled">
+                        <MdNetworkCheck size="20px" />
+                    </ActionIcon>
+                </Tooltip>
             </Box>
         </Box>
         {isMedium?null:<Space h="md" />}
@@ -195,6 +204,14 @@ export default function ServiceDetailsNFProxy() {
         </Box>
         
         <Divider my="xl" />
+
+        {trafficVisible && <>
+            <Title order={3} style={{textAlign:"center"}} className="center-flex"><MdNetworkCheck style={{ marginBottom: -3 }} size={28} /><Space w="xs" />Traffic View</Title>
+            <Box px="md" mt="md">
+                <TrafficView service_id={srv} />
+            </Box>
+            <Divider my="xl" />
+        </>}
 
         {filterCode.data?<>
             <Title order={3} style={{textAlign:"center"}} className="center-flex"><FaPython style={{ marginBottom: -3 }} size={30} /><Space w="xs" />Filter code</Title>

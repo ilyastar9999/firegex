@@ -15,6 +15,7 @@
 #include <thread>
 #include <syncstream>
 #include <iostream>
+#include <mutex>
 #include "../classes/netfilter.cpp"
 #include "../classes/nfqueue.cpp"
 #include "stream_ctx.cpp"
@@ -27,6 +28,24 @@ using namespace std;
 
 namespace Firegex {
 namespace PyProxy {
+
+// Mutex to make control socket writes thread-safe when NTHREADS > 1
+static mutex control_socket_mtx;
+
+// Thread-safe send helper: sends a single line atomically
+inline void ctrl_send(const string& msg) {
+	lock_guard<mutex> lock(control_socket_mtx);
+	control_socket.send(msg + "\n");
+}
+
+// Returns a space-separated connection descriptor: "<is_ipv6:0|1> <src_ip> <src_port> <dst_ip> <dst_port>"
+static string stream_conn_info(const Stream& stream) {
+	bool v6 = stream.is_v6();
+	string src_ip = v6 ? stream.client_addr_v6().to_string() : stream.client_addr().to_string();
+	string dst_ip = v6 ? stream.server_addr_v6().to_string() : stream.server_addr().to_string();
+	return string(v6 ? "1" : "0") + " " + src_ip + " " + to_string(stream.client_port())
+		+ " " + dst_ip + " " + to_string(stream.server_port());
+}
 
 class PyProxyQueue: public NfQueue::ThreadNfQueue<PyProxyQueue> {
 	private:
@@ -76,16 +95,23 @@ class PyProxyQueue: public NfQueue::ThreadNfQueue<PyProxyQueue> {
 		follower.stream_termination_callback(bind(on_stream_close, placeholders::_1, this));
     }
 
-	inline void print_blocked_reason(const string& func_name){
-		control_socket << "BLOCKED " << func_name << endl;
+	// Send BLOCKED with filter name and connection info
+	inline void print_blocked_reason(const string& func_name, const Stream& stream){
+		ctrl_send("BLOCKED " + func_name + " " + stream_conn_info(stream));
 	}
 
-	inline void print_mangle_reason(const string& func_name){
-		control_socket << "MANGLED " << func_name << endl;
+	// Send MANGLED with filter name and connection info
+	inline void print_mangle_reason(const string& func_name, const Stream& stream){
+		ctrl_send("MANGLED " + func_name + " " + stream_conn_info(stream));
 	}
 
-	inline void print_exception_reason(){
-		control_socket << "EXCEPTION" << endl;
+	// Send EXCEPTION with connection info (stream available) or without
+	inline void print_exception_reason(const Stream& stream){
+		ctrl_send("EXCEPTION " + stream_conn_info(stream));
+	}
+
+	inline void print_exception_reason_no_stream(){
+		ctrl_send("EXCEPTION");
 	}
 
 	//If the stream has already been matched, drop all data, and try to close the connection
@@ -115,7 +141,7 @@ class PyProxyQueue: public NfQueue::ThreadNfQueue<PyProxyQueue> {
 					stream_match = new pyfilter_ctx(compiled_code, handle_packet_code);
 				}catch(invalid_argument& e){
 					cerr << "[error] [filter_action] Failed to create the filter context" << endl;
-					print_exception_reason();
+					print_exception_reason(stream);
 					sctx.clean_stream_by_id(pkt->sid);
 					stream.client_data_callback(nullptr);
 					stream.server_data_callback(nullptr);
@@ -134,13 +160,13 @@ class PyProxyQueue: public NfQueue::ThreadNfQueue<PyProxyQueue> {
 			case PyFilterResponse::ACCEPT:
 				return pkt->accept();
 			case PyFilterResponse::DROP:
-				print_blocked_reason(*result.filter_match_by);
+				print_blocked_reason(*result.filter_match_by, stream);
 				sctx.clean_stream_by_id(pkt->sid);
 				stream.client_data_callback(bind(keep_dropped, this));
 				stream.server_data_callback(bind(keep_dropped, this));
 				return pkt->drop();
 			case PyFilterResponse::REJECT:
-				print_blocked_reason(*result.filter_match_by);
+				print_blocked_reason(*result.filter_match_by, stream);
 				sctx.clean_stream_by_id(pkt->sid);
 				stream.client_data_callback(bind(keep_fin_packet, this));
 				stream.server_data_callback(bind(keep_fin_packet, this));
@@ -149,15 +175,15 @@ class PyProxyQueue: public NfQueue::ThreadNfQueue<PyProxyQueue> {
 				pkt->mangle_custom_pkt(result.mangled_packet->c_str(), result.mangled_packet->size());
 				if (pkt->get_action() == NfQueue::FilterAction::DROP){
 					cerr << "[ERROR] [filter_action] Failed to mangle: Malformed Packet... the packet was dropped" << endl;
-					print_blocked_reason(*result.filter_match_by);
-					print_exception_reason();
+					print_blocked_reason(*result.filter_match_by, stream);
+					print_exception_reason(stream);
 				}else{
-					print_mangle_reason(*result.filter_match_by);
+					print_mangle_reason(*result.filter_match_by, stream);
 				}
 				return;
 			case PyFilterResponse::EXCEPTION:
 			case PyFilterResponse::INVALID:
-				print_exception_reason();
+				print_exception_reason(stream);
 				sctx.clean_stream_by_id(pkt->sid);
 				//Free the packet data
 				stream.ignore_client_data();
@@ -188,12 +214,14 @@ class PyProxyQueue: public NfQueue::ThreadNfQueue<PyProxyQueue> {
 	
 	// A stream was terminated. The second argument is the reason why it was terminated
 	static void on_stream_close(Stream& stream, PyProxyQueue* pyq) {
+		ctrl_send("CONN_CLOSE " + stream_conn_info(stream));
 		stream_id stream_id = stream_id::make_identifier(stream);
 		pyq->sctx.clean_stream_by_id(stream_id);
 		pyq->sctx.clean_tcp_ack_by_id(stream_id);
 	}
 	
 	static void on_new_stream(Stream& stream, PyProxyQueue* pyq) {
+		ctrl_send("CONN_OPEN " + stream_conn_info(stream));
 		stream.auto_cleanup_payloads(true);
 		if (stream.is_partial_stream()) {
 			stream.enable_recovery_mode(10 * 1024);
