@@ -373,6 +373,7 @@ async def get_service_traffic(service_id: str):
         return []
 
 
+@app.get('/services/{service_id}/code', response_class=PlainTextResponse)
 async def get_pyfilters_code(service_id: str):
     """Get the python filter for a service"""
     if not db.query("SELECT 1 FROM services WHERE service_id = ?;", service_id):
